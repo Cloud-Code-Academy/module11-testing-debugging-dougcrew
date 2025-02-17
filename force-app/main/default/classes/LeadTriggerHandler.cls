@@ -14,7 +14,27 @@
  * https://developer.salesforce.com/docs/atlas.en-us.apexcode.meta/apexcode/apex_dml_convertLead.htm
  * https://developer.salesforce.com/docs/atlas.en-us.apexref.meta/apexref/apex_methods_system_test.htm
  */
-public with sharing class LeadTriggerHandler {
+public with sharing class LeadTriggerHandler extends TriggerHandler {
+
+	public static Map<Id, Lead> oldLeads { get; set; }
+
+	private List<Lead> newLeadList;
+    private List<Lead> oldLeadList;
+    private Map<Id, Lead> newLeadMap;
+    private Map<Id, Lead> oldLeadMap;
+
+    public LeadTriggerHandler(){
+        this.newLeadList = (List<Lead>) Trigger.new;
+        this.newLeadMap = (Map<Id, Lead>) Trigger.newMap;
+        this.oldLeadList = (List<Lead>) Trigger.old;
+        this.oldLeadMap = (Map<Id, Lead>) Trigger.oldMap;
+	}
+	private static Map<Id, String> leadToEmailMap = new Map<Id, String>();
+
+	@TestVisible
+	private static Integer getLeadToEmailMapSize() {
+		return leadToEmailMap.size();
+	}
 	/* 
 	 * Question 1
 	 * Requirement Lead Title Normalization - handleTitleNormalization
@@ -30,21 +50,26 @@ public with sharing class LeadTriggerHandler {
 	 * - If the title contains terms like 'assist', 'deputy', or 'jr',
 	 *   change the title to 'Assistant'.
 	 */
-	public static void handleTitleNormalization(List<Lead> leadsToNormalize) {
-		for (Lead ld : leadsToNormalize) {
-			if (ld.title == 'vp' || ld.title.contains('v.p.') || ld.title.contains('vice president')) {
+	public static void handleTitleNormalization(List<Lead> newLeadList) {
+		
+		for (Lead ld : newLeadList) {
+			if(ld.Title != null) {
+				String lowerTitle = ld.Title.toLowerCase();
+			
+			if (lowerTitle == 'vp' || lowerTitle.contains('v.p.') || lowerTitle.contains('vice president')) {
 				ld.Title = 'Vice President';
 			} else if (
-				ld.title.contains('mgr') ||
-				ld.title.contains('manage') ||
-				ld.title.contains('head of department')
+				lowerTitle.contains('mgr') ||
+				lowerTitle.contains('manage') ||
+				lowerTitle.contains('head of department')
 			) {
 				ld.Title = 'Manager';
-			} else if (ld.title.contains('exec') || ld.title == 'chief' || ld.title.contains('head')) {
+			} else if (lowerTitle.contains('exec') || lowerTitle == 'chief' || lowerTitle.contains('head')) {
 				ld.Title = 'Executive';
-			} else if (ld.title.contains('assist') || ld.title.contains('deputy') || ld.title == 'jr') {
+			} else if (lowerTitle.contains('assist') || lowerTitle.contains('deputy') || lowerTitle == 'jr') {
 				ld.Title = 'Assistant';
 			}
+		}
 		}
 	}
 
@@ -59,9 +84,9 @@ public with sharing class LeadTriggerHandler {
 	 * - If the lead provides a phone number, increment score by 5 points.
 	 * - If the lead belongs to the 'Technology' industry, increment score by another 10 points.
 	 */
-	public static void handleAutoLeadScoring(List<Lead> leadsToScore) {
-		for (Lead ld : leadsToScore) {
-			Integer score = 10;
+	public static void handleAutoLeadScoring(List<Lead> newLeadList) {
+		for (Lead ld : newLeadList) {
+			Integer score = 0;
 
 			// Check and add points based on the specified conditions
 			if (ld.LeadSource == 'Website' && ld.Email != null) {
@@ -69,11 +94,11 @@ public with sharing class LeadTriggerHandler {
 			}
 
 			if (ld.Phone != null) {
-				score = 5;
+				score += 5;
 			}
 
 			if (ld.Industry == 'Technology') {
-				score = 10;
+				score += 10;
 			}
 
 			ld.Lead_Score__c = score; // Set the computed score back to the lead
@@ -103,28 +128,39 @@ public with sharing class LeadTriggerHandler {
 	 * - One of the errors is recursion related. Check if the lead is already converted or check if the email has changed/is null
 	 * - One of the errors is map related. Make sure you are using the correct contact map key
 	 */
-	public static void handleLeadAutoConvert(List<Lead> leads) {
+	public static void handleLeadAutoConvert(List<Lead> newLeadList) {
 		// Step 1: Gather all lead emails
+		Map<Id, Lead> oldLeadsMap = oldLeads != null ? oldLeads : (Map<Id, Lead>)Trigger.oldMap;
         Map<Id,String> leadToEmailMap = new Map<Id,String>();
-		for (Lead lead : leads) {
-			leadToEmailMap.put(lead.Id, lead.Email);
-		}
+		for (Lead lead : newLeadList) {
+			if ( lead.IsConverted) {
+				continue;
+			} 
+
+			if ( oldLeads != null ) {
+				Lead oldLead = oldLeads.get(lead.Id);
+			
+			if ( lead.Email != oldLead.Email) {
+				leadToEmailMap.put(lead.Id, lead.Email);
+				}
+			}
+		}		
 
 		// Step 2: Find matching contacts based on email
 		Map<String, Contact> emailToContactMap = new Map<String, Contact>();
-		for (Contact c : [SELECT Id, Email, AccountId FROM Contact WHERE Email IN :leadToEmailMap.values()]) {
-			if (!emailToContactMap.containsKey(c.Email)) {
-				emailToContactMap.put(c.Email, c);
+		for (Contact cont : [SELECT Id, Email, AccountId FROM Contact WHERE Email IN :leadToEmailMap.values() WITH USER_MODE]) {
+			if (!emailToContactMap.containsKey(cont.Email)) {
+			emailToContactMap.put(cont.Email, cont);
 			} else {
-				// If we found another contact with the same email, we don't auto-convert.
-				// So we remove the email from the map.
-				emailToContactMap.remove(c.Email);
+			// If we found another contact with the same email, we don't auto-convert.
+			// So we add the email from the map.
+				emailToContactMap.remove(cont.Email);
 			}
 		}
 
 		// Step 3: Auto-convert leads
 		List<Database.LeadConvert> leadConverts = new List<Database.LeadConvert>();
-		LeadStatus convertStatus = [SELECT Id, MasterLabel FROM LeadStatus WHERE IsConverted = TRUE LIMIT 1];
+		LeadStatus convertStatus = [SELECT Id, MasterLabel FROM LeadStatus WHERE IsConverted = true WITH USER_MODE LIMIT 1];
 		for (Id leadId : leadToEmailMap.keySet()) {
             String leadEmail = leadToEmailMap.get(leadId);
 			if (emailToContactMap.containsKey(leadEmail)) {
@@ -142,4 +178,4 @@ public with sharing class LeadTriggerHandler {
 			List<Database.LeadConvertResult> lcrs = Database.convertLead(leadConverts);
 		}
 	}
-}
+} 
